@@ -1,6 +1,6 @@
 package xyz.mazuninky.app
 
-import io.undertow.server.HttpServerExchange
+import xyz.mazuninky.framework.server
 
 fun main() {
     server {

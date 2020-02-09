@@ -11,7 +11,7 @@ repositories {
 }
 
 dependencies {
-    implementation(module(":xyz.mazuninky.framework"))
+    implementation(project(":framework"))
     implementation(kotlin("stdlib-jdk8"))
     testImplementation("junit", "junit", "4.12")
     implementation("io.undertow:undertow-core:2.0.1.Final")
