@@ -1,37 +1,53 @@
 package xyz.mazuninky.framework
 
-import xyz.mazuninky.framework.router.Router
-import xyz.mazuninky.framework.router.buildRouter
 import io.undertow.Undertow
-import io.undertow.io.Sender
+import io.undertow.server.HttpHandler
 import io.undertow.server.HttpServerExchange
-import java.util.*
+import io.undertow.server.RoutingHandler
+import io.undertow.util.SameThreadExecutor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 
-typealias RequestHandler = (exchange: HttpServerExchange, response: Sender) -> Unit
+typealias RequestHandler = (exchange: HttpServerExchange) -> Unit
 
-typealias WebRouterMap = MutableMap<HttpMethod, Router<RequestHandler>>
+typealias CoroutinesRequestHandler = suspend (exchange: HttpServerExchange) -> Unit
+
+fun coroutinesHandlerAdapter(handler: CoroutinesRequestHandler): RequestHandler {
+    return { exchange ->
+        exchange.dispatch(
+            SameThreadExecutor.INSTANCE,
+            Runnable {
+                GlobalScope.launch(Dispatchers.Default) {
+                    handler(exchange)
+                }
+            }
+        )
+    }
+}
 
 enum class HttpMethod {
     GET, POST, HEAD, OPTIONS, DELETE, PUT
 }
 
-class ServerFramework(host: String, port: Int, private val routerMap: WebRouterMap) {
+data class RouteDescription(val method: HttpMethod, val route: String, val handler: CoroutinesRequestHandler)
+
+class ServerFramework(host: String, port: Int, routeList: List<RouteDescription>) {
     private val undertow: Undertow
 
     init {
-        undertow = Undertow.builder()
+        val builder = Undertow.builder()
             .addHttpListener(port, host)
-            .setHandler(::requestHandler)
-            .build()
-    }
 
-    private fun requestHandler(exchange: HttpServerExchange) {
-        val httpMethod = HttpMethod.valueOf(exchange.requestMethod.toString())
-        val methodRouter = routerMap[httpMethod]
+        val router = RoutingHandler()
+        routeList.forEach {
+            val (method, route, handler) = it
+            router.add(method.toString(), route, coroutinesHandlerAdapter(handler))
+        }
 
-        methodRouter
-            ?.route(exchange.requestPath)
-            ?.invoke(exchange, exchange.responseSender)
+        builder.setHandler(router)
+
+        undertow = builder.build()
     }
 
     fun run() {
@@ -52,50 +68,30 @@ fun server(
 }
 
 class ServerBuilder {
-    private lateinit var webRouterMap: WebRouterMap
+    private lateinit var routeList: List<RouteDescription>
 
-    fun routing(routerBuilder: WebRouterBuilder.() -> Unit) {
-        val builder = WebRouterBuilder()
-
-        webRouterMap = builder.apply(routerBuilder).build()
+    fun routing(routerBuilder: WebRouteDSL.() -> Unit) {
+        val dsl = WebRouteDSL()
+        routeList = dsl.apply(routerBuilder).routes
     }
 
     fun build(host: String, port: Int): ServerFramework {
-        return ServerFramework(host, port, webRouterMap)
+        return ServerFramework(host, port, routeList)
     }
 }
 
-class WebRouterBuilder {
-    private val routes: MutableMap<HttpMethod, MutableMap<String, RequestHandler>> =
-        EnumMap<HttpMethod, MutableMap<String, RequestHandler>>(HttpMethod::class.java)
+class WebRouteDSL {
+    internal val routes = mutableListOf<RouteDescription>()
 
-    init {
-        HttpMethod.values().forEach {
-            routes[it] = mutableMapOf()
-        }
+    fun get(url: String, handler: CoroutinesRequestHandler) {
+        routes.add(RouteDescription(HttpMethod.GET, url, handler))
     }
 
-    private fun handle(method: HttpMethod, url: String, handler: RequestHandler) {
-        routes.getValue(method)[url] = handler
+    fun post(url: String, handler: CoroutinesRequestHandler) {
+        routes.add(RouteDescription(HttpMethod.POST, url, handler))
     }
 
-    fun get(url: String, handler: RequestHandler) {
-        handle(HttpMethod.GET, url, handler)
-    }
-
-    fun post(url: String, handler: RequestHandler) {
-        handle(HttpMethod.POST, url, handler)
-    }
-
-    fun put(url: String, handler: RequestHandler) {
-        handle(HttpMethod.PUT, url, handler)
-    }
-
-    internal fun build(): WebRouterMap {
-        val webRouterMap = EnumMap<HttpMethod, Router<RequestHandler>>(HttpMethod::class.java)
-        routes.forEach { (method, list) ->
-            webRouterMap[method] = buildRouter(list)
-        }
-        return webRouterMap
+    fun put(url: String, handler: CoroutinesRequestHandler) {
+        routes.add(RouteDescription(HttpMethod.PUT, url, handler))
     }
 }
